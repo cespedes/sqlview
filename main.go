@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/cespedes/tableview"
 	"github.com/gdamore/tcell/v2"
+	"github.com/jmoiron/sqlx"
 )
 
 func main() {
@@ -21,7 +24,62 @@ func main() {
 type app struct {
 	Debug      bool
 	ConfigFile string
+	pageName   string
+	pageArgs   []string
+	db         *sqlx.DB
+	result     SQLResult
+	table      *tableview.TableView
 	config
+}
+
+func sliceStringToAny(in []string) []interface{} {
+	out := make([]interface{}, len(in))
+	for i, v := range in {
+		out[i] = v
+	}
+	return out
+}
+
+func (a *app) changePage(page string, args []string) error {
+	var err error
+
+	fields := strings.Fields(page)
+	if len(fields) == 0 {
+		return fmt.Errorf("empty page %q", page)
+	}
+	a.pageName = fields[0]
+	a.pageArgs = fields[1:]
+
+	// Bind dollars in pageArgs:
+	for i, arg := range a.pageArgs {
+		res := ""
+		for j := strings.Index(arg, "$"); j != -1; j = strings.Index(arg, "$") {
+			res += arg[:j]
+			arg = arg[j+1:]
+			argNum := 0
+			for len(arg) > 0 && arg[0] >= '0' && arg[0] <= '9' {
+				argNum *= 10
+				argNum += int(arg[0]) - '0'
+				arg = arg[1:]
+			}
+			res += args[argNum-1]
+		}
+		res += arg
+		a.pageArgs[i] = res
+	}
+
+	query, bindArgs := sqlBind(a.db, a.Pages[a.pageName].Select, a.pageArgs)
+	//	if a.table != nil && len(a.pageArgs) > 0 {
+	//		a.table.Suspend(func() {
+	//			fmt.Printf("QUERY=%q ARGS=%q\n", query, args)
+	//			time.Sleep(5 * time.Second)
+	//		})
+	//	}
+	a.result, err = sqlQuery(a.db, query, bindArgs...)
+	if err != nil {
+		err = fmt.Errorf("changePage(%s): %v <%q,%q>", page, err, query, bindArgs)
+	}
+	return err
 }
 
 func keyStringMatch(str string, k tcell.Key, r rune) bool {
@@ -41,12 +99,12 @@ func keyStringMatch(str string, k tcell.Key, r rune) bool {
 }
 
 func run(args []string) error {
+	var err error
 	app := app{}
 
 	flags := flag.NewFlagSet(args[0], flag.ExitOnError)
 	flags.BoolVar(&app.Debug, "debug", false, "Debugging")
 	flags.StringVar(&app.ConfigFile, "config", filepath.Join(os.Getenv("HOME"), ".sqlview.yaml"), "Config file")
-	flags.StringVar(&app.Format, "format", "", "Output format to use (default \"org\")")
 	flags.StringVar(&app.Editor, "editor", "", "Editor to use")
 	flags.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: sqlvi [options] [<page from config file>]")
@@ -54,105 +112,117 @@ func run(args []string) error {
 		flags.PrintDefaults()
 	}
 
-	if err := flags.Parse(args[1:]); err != nil {
+	if err = flags.Parse(args[1:]); err != nil {
 		return err
 	}
 	if len(flags.Args()) > 1 {
 		return fmt.Errorf("too many arguments")
 	}
-	pageName := ""
+	// pageArgs := []string{}
 	if len(flags.Args()) == 1 {
-		pageName = flags.Args()[0]
+		app.pageName = flags.Args()[0]
 	}
 
-	err := app.readConfig()
-	if err != nil {
+	if err = app.readConfig(); err != nil {
 		return err
 	}
-	if pageName == "" {
-		pageName = app.Default
+	if app.pageName == "" {
+		app.pageName = app.DefaultPage
 	}
 
-	if app.Pages[pageName].Select == "" {
+	if app.Pages[app.pageName].Select == "" {
 		return fmt.Errorf("no query specified")
 	}
 
-	db, err := sqlConnect(app.Connect)
+	app.db, err = sqlConnect(app.Connect)
 	if err != nil {
 		return err
 	}
-	result, err := sqlGenericQuery(db, app.Pages[pageName].Select)
+	err = app.changePage(app.pageName, nil)
 	if err != nil {
 		return err
 	}
 
-	t := tableview.NewTableView()
-	t.FillTable(result.Columns, result.Strings)
-	t.SetInputCapture(func(key tableview.Key, r rune, row int) bool {
-		for k, action := range app.Pages[pageName].Keys {
+	app.table = tableview.NewTableView()
+	app.table.FillTable(app.result.Columns, app.result.Strings)
+	app.table.SetInputCapture(func(key tableview.Key, r rune, row int) bool {
+		for k, action := range app.Pages[app.pageName].Keys {
 			if keyStringMatch(k, key, r) {
-				pageName = action
-				result, err = sqlGenericQuery(db, app.Pages[pageName].Select)
+				app.table.Suspend(func() {
+					fmt.Printf(">>> page=%q,key=%q: switching to page %q\n", app.pageName, k, action)
+				})
+				err = app.changePage(action, app.result.Strings[row])
 				if err != nil {
-					t.Suspend(func() {
+					app.table.Suspend(func() {
 						fmt.Printf("Error: %s\n", err.Error())
 						os.Exit(1)
 					})
 				}
-				t.Suspend(func() {
-					fmt.Printf(">>> switching to page %q\n", pageName)
-				})
-				t.FillTable(result.Columns, result.Strings)
+				app.table.FillTable(app.result.Columns, app.result.Strings)
 				return false
 			}
 		}
-		for k, sw := range app.Pages[pageName].SwitchKeys {
+		for k, sw := range app.Pages[app.pageName].SwitchKeys {
 			if keyStringMatch(k, key, r) {
-				id := result.Strings[row][0]
+				id := app.result.Strings[row][0]
 				action := sw[id]
 				if action == "" {
 					break
 				}
-				pageName = action
-				result, err = sqlGenericQuery(db, app.Pages[pageName].Select)
+				app.table.Suspend(func() {
+					fmt.Printf(">>> page=%q,key=%q,id=%q: switching to page %q\n", app.pageName, k, id, action)
+				})
+				err = app.changePage(action, app.result.Strings[row])
 				if err != nil {
-					t.Suspend(func() {
+					app.table.Suspend(func() {
 						fmt.Printf("Error: %s\n", err.Error())
 						os.Exit(1)
 					})
 				}
-				t.Suspend(func() {
-					fmt.Printf(">>> switching to page %q\n", pageName)
-				})
-				t.FillTable(result.Columns, result.Strings)
+				app.table.FillTable(app.result.Columns, app.result.Strings)
 				return false
 			}
 		}
-		t.Suspend(func() {
-			// fmt.Printf("keys = %+v\n", app.Pages[pageName].Keys)
-			// fmt.Printf("switch-keys = %+v\n", app.Pages[pageName].SwitchKeys)
-			fmt.Printf("input: key=%d rune=%d row=%d\n", key, r, row)
-			if key == tcell.KeyTAB {
-				fmt.Println("(TAB)")
-			}
-			if key == tcell.KeyCR {
-				fmt.Println("(ENTER)")
-			}
-		})
+		if key == tcell.KeyTAB || key == tcell.KeyCR {
+			app.table.Suspend(func() {
+				// fmt.Printf("keys = %+v\n", app.Pages[app.pageName].Keys)
+				// fmt.Printf("switch-keys = %+v\n", app.Pages[app.pageName].SwitchKeys)
+				// fmt.Printf("input: key=%d rune=%d row=%d\n", key, r, row)
+				if key == tcell.KeyTAB {
+					fmt.Println("(TAB)")
+				}
+				if key == tcell.KeyCR {
+					fmt.Println("(ENTER)")
+				}
+			})
+		}
 		return true
 	})
-	t.SetSelectedFunc(func(row int) {
+	app.table.SetSelectedFunc(func(row int) {
 		// t.SetAlign(1, tableview.AlignRight)
-		t.Suspend(func() {
+		app.table.Suspend(func() {
 			fmt.Printf("selected row: %d\n", row)
 		})
 	})
-	t.NewCommand('F', "foo", func(row int) {
-		t.Suspend(func() {
-			fmt.Printf("command f: row: %d\n", row)
+	app.table.NewCommand('N', "new", func(row int) {
+		app.table.Suspend(func() {
+			fmt.Printf("creating new page (TODO)\n")
+			time.Sleep(time.Second)
 		})
 	})
-	t.Run()
+	app.table.NewCommand('E', "edit", func(row int) {
+		app.table.Suspend(func() {
+			fmt.Printf("editing entry (TODO): row=%d\n", row)
+			time.Sleep(time.Second)
+		})
+	})
+	app.table.NewCommand('D', "delete", func(row int) {
+		app.table.Suspend(func() {
+			fmt.Printf("deleting entry (TODO): row=%d\n", row)
+			time.Sleep(time.Second)
+		})
+	})
+	app.table.Run()
 
 	return nil
 }

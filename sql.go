@@ -10,8 +10,8 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// SQLGenericResult holds the result of a SQL query
-type SQLGenericResult struct {
+// SQLResult holds the result of a SQL query
+type SQLResult struct {
 	Columns []string
 	Values  [][]interface{}
 	Strings [][]string
@@ -29,14 +29,14 @@ type SQLGenericResult struct {
 func sqlConnect(connStr string) (*sqlx.DB, error) {
 	db, err := sqlx.Connect("postgres", connStr)
 	if err != nil {
-		return db, err
+		return nil, err
 	}
 	return db, nil
 }
 
-func sqlGenericQuery(db *sqlx.DB, query string, args ...interface{}) (SQLGenericResult, error) {
-	result := SQLGenericResult{}
-	rows, err := db.Query(query)
+func sqlQuery(db *sqlx.DB, query string, args ...interface{}) (SQLResult, error) {
+	result := SQLResult{}
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return result, err
 	}
@@ -117,9 +117,9 @@ func sqlString(a interface{}) string {
 }
 
 // sqlBind converts a query with DOLLAR bindvars ($1, $2...) into driver's bindvar type
-func sqlBind(db *sqlx.DB, query string, args []string) (string, []string) {
+func sqlBind(db *sqlx.DB, query string, args []string) (string, []interface{}) {
 	var res string
-	var resArgs []string
+	var resArgs []interface{}
 	// First, we convert DOLLARs into QUESTIONs
 	for i := strings.Index(query, "$"); i != -1; i = strings.Index(query, "$") {
 		res += query[:i]

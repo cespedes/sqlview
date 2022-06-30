@@ -36,11 +36,10 @@ type configPage struct {
 }
 
 type config struct {
-	Editor  string
-	Default string
-	Format  string
-	Connect string
-	Pages   map[string]configPage
+	Editor      string
+	DefaultPage string `yaml:"default"`
+	Connect     string
+	Pages       map[string]configPage
 }
 
 func (app *app) readConfig() error {
@@ -60,14 +59,8 @@ func (app *app) readConfig() error {
 		return fmt.Errorf("parsing %s: %w", app.ConfigFile, err)
 	}
 
-	app.Default = config.Default
+	app.DefaultPage = config.DefaultPage
 
-	if app.Format == "" {
-		app.Format = config.Format
-		if app.Format == "" {
-			app.Format = "org"
-		}
-	}
 	if app.Connect == "" {
 		app.Connect = config.Connect
 	}
