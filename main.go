@@ -62,7 +62,11 @@ func (a *app) changePage(page string, args []string) error {
 				argNum += int(arg[0]) - '0'
 				arg = arg[1:]
 			}
-			res += args[argNum-1]
+			if len(args) > argNum-1 {
+				res += args[argNum-1]
+			} else {
+				res += fmt.Sprintf("$%d", argNum)
+			}
 		}
 		res += arg
 		a.pageArgs[i] = res
@@ -151,7 +155,11 @@ func run(args []string) error {
 				app.table.Suspend(func() {
 					fmt.Printf(">>> page=%q,key=%q: switching to page %q\n", app.pageName, k, action)
 				})
-				err = app.changePage(action, app.result.Strings[row])
+				if row < len(app.result.Strings) {
+					err = app.changePage(action, app.result.Strings[row])
+				} else {
+					err = app.changePage(action, nil)
+				}
 				if err != nil {
 					app.table.Suspend(func() {
 						fmt.Printf("Error: %s\n", err.Error())
@@ -205,24 +213,73 @@ func run(args []string) error {
 		})
 	})
 	app.table.NewCommand('N', "new", func(row int) {
-		app.table.Suspend(func() {
-			fmt.Printf("creating new page (TODO)\n")
-			time.Sleep(time.Second)
-		})
+		app.cmdNew()
+	})
+	app.table.NewCommand('C', "copy", func(row int) {
+		app.cmdCopy(row)
 	})
 	app.table.NewCommand('E', "edit", func(row int) {
-		app.table.Suspend(func() {
-			fmt.Printf("editing entry (TODO): row=%d\n", row)
-			time.Sleep(time.Second)
-		})
+		app.cmdEdit(row)
 	})
 	app.table.NewCommand('D', "delete", func(row int) {
-		app.table.Suspend(func() {
-			fmt.Printf("deleting entry (TODO): row=%d\n", row)
-			time.Sleep(time.Second)
-		})
+		app.cmdDelete(row)
 	})
 	app.table.Run()
 
 	return nil
+}
+
+func (a *app) editor() {
+}
+
+func (a *app) cmdNew() {
+	editor, err := NewEditor(a.result.Columns)
+	if err != nil {
+		panic(err)
+	}
+	defer editor.Close()
+
+	a.table.Suspend(func() {
+		err = editor.Edit(a.Editor)
+	})
+	if err != nil {
+		panic(err)
+	}
+	a.table.Suspend(func() {
+		fmt.Printf("cmdNew(): %+#v\n", editor.Results)
+	})
+
+}
+
+func (a *app) cmdCopy(row int) {
+	a.table.Suspend(func() {
+		fmt.Printf("copying entry (TODO): row=%d\n", row)
+		time.Sleep(time.Second)
+	})
+}
+
+func (a *app) cmdEdit(row int) {
+	editor, err := NewEditorData(a.result.Columns, a.result.Values[row])
+	if err != nil {
+		panic(err)
+	}
+	defer editor.Close()
+
+	a.table.Suspend(func() {
+		err = editor.Edit(a.Editor)
+	})
+	if err != nil {
+		panic(err)
+	}
+	a.table.Suspend(func() {
+		fmt.Printf("cmdEdit(): %+#v\n", editor.Results)
+	})
+
+}
+
+func (a *app) cmdDelete(row int) {
+	a.table.Suspend(func() {
+		fmt.Printf("deleting entry (TODO): row=%d\n", row)
+		time.Sleep(time.Second)
+	})
 }

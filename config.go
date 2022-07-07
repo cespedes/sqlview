@@ -5,7 +5,7 @@ import (
 	"io/ioutil"
 	"log"
 
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 /*
@@ -55,7 +55,7 @@ func (app *app) readConfig() error {
 		}
 		return nil
 	}
-	if err := yaml.UnmarshalStrict(data, &config); err != nil {
+	if err := yaml.Unmarshal(data, &config); err != nil {
 		return fmt.Errorf("parsing %s: %w", app.ConfigFile, err)
 	}
 

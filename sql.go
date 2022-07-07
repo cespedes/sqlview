@@ -49,6 +49,10 @@ func sqlQuery(db *sqlx.DB, query string, args ...interface{}) (SQLResult, error)
 		values := make([]interface{}, len(result.Columns))
 		for i := range values {
 			values[i] = new(interface{})
+			// "_text" is the PostgreSQL database type name for []text, or array of strings.
+			// See:
+			// - https://stackoverflow.com/questions/71332976/text-postgres-data-type
+			// - https://dba.stackexchange.com/questions/307344/what-is-the-difference-between-postgres-text-and-text-array-types
 			if strings.EqualFold("_text", types[i].DatabaseTypeName()) {
 				array := make(pq.StringArray, 0)
 				values[i] = &array
@@ -61,15 +65,19 @@ func sqlQuery(db *sqlx.DB, query string, args ...interface{}) (SQLResult, error)
 		strs := make([]string, len(result.Columns))
 		moreArrays := false
 		for i := range values {
-			if ptr, ok := values[i].(*interface{}); ok {
+			switch ptr := values[i].(type) {
+			case *interface{}:
 				values[i] = *ptr
 				strs[i] = sqlString(*ptr)
-			}
-			if ptr, ok := values[i].(*pq.StringArray); ok {
+			case *pq.StringArray:
 				arr := *ptr
-				values[i] = arr
+				slice := make([]string, len(arr))
+				for j := range arr {
+					slice[j] = string(arr[j])
+				}
+				values[i] = slice
 				if len(arr) > 0 {
-					strs[i] = sqlString((*ptr)[0])
+					strs[i] += sqlString(arr[0])
 				}
 				if len(arr) > 1 {
 					moreArrays = true
@@ -82,7 +90,7 @@ func sqlQuery(db *sqlx.DB, query string, args ...interface{}) (SQLResult, error)
 			strs = make([]string, len(result.Columns))
 			moreArrays = false
 			for i := range values {
-				if arr, ok := values[i].(pq.StringArray); ok {
+				if arr, ok := values[i].([]string); ok {
 					if len(arr) > j {
 						strs[i] = sqlString(arr[j])
 					}
@@ -91,6 +99,7 @@ func sqlQuery(db *sqlx.DB, query string, args ...interface{}) (SQLResult, error)
 					}
 				}
 			}
+			result.Values = append(result.Values, values)
 			result.Strings = append(result.Strings, strs)
 		}
 	}
